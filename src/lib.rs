@@ -18,6 +18,13 @@ use rdev::{
   Key
 };
 
+fn vector_equals(va: &Vec<Key>, vb: &Vec<Key>) -> bool{
+  (va.len() == vb.len()) &&  // zip stops at the shortest
+    va.iter()
+    .zip(vb)
+    // TODO: very slow
+    .all(|(a,b)| format!("{:?}", a) == format!("{:?}", b))
+}
 
 fn type_of<T>(_: T) -> &'static str {
       type_name::<T>()
@@ -27,6 +34,7 @@ type Part = Box<dyn Future<Output=Option<bool>>>;
 type AsyncFn = Box<dyn Fn(Vec<Key>) -> Box<dyn Future<Output = bool> + Unpin + Send + 'static> + Send + 'static>;
 
 lazy_static! {
+  static ref LAST_KEYS: tokio::sync::Mutex<Vec<Key>> = Mutex::const_new(Vec::new());
   static ref CURRENT_KEYS: tokio::sync::Mutex<Vec<Key>> = Mutex::const_new(Vec::new());
    static ref TEST: tokio::sync::Mutex<AsyncFn> = tokio::sync::Mutex::const_new(
 Box::new(move |keys: Vec<Key>| {
@@ -41,24 +49,32 @@ async fn internal_listener(event: Event) -> Option<Event> {
     match event.event_type {
       KeyPress(x) => {
         let mut mods = CURRENT_KEYS.lock().await;
+          let mut last_keys = LAST_KEYS.lock().await;
+          *last_keys = mods.clone();
          mods.push(x);
-
             let sf = TEST.lock().await;
                 mods.dedup();
-                let consume: task::JoinHandle<bool> = task::spawn(sf(mods.clone()));
-                println!("TYPE: {:?}", type_of(consume.await.unwrap()));
-                /*
-                if consume.await? {
-                  return None;
-                } else {
-                  return Some(event);
-                }*/
+                //println!("CURR[D]: {:?}", mods);
+                //println!("LAST[D]: {:?}", last_keys);
+                if !vector_equals(&mods, &last_keys) {
+                  let consume: task::JoinHandle<bool> = task::spawn(sf(mods.clone()));
+                  //println!("TYPE: {:?}", type_of(consume.await.unwrap()));
+                  if consume.await.unwrap() {
+                    return None;
+                  } else {
+                    return Some(event);
+                  }
+                } 
             
           
       }
       KeyRelease(x) => {
+        let mut last_keys = LAST_KEYS.lock().await;
         let mut mods = CURRENT_KEYS.lock().await;
+        *last_keys = mods.clone();
         mods.retain(|&k| k != x);
+                //println!("CURR[U]: {:?}", mods);
+                //println!("LAST[U]: {:?}", last_keys);
       }
     _ => ()
   }
