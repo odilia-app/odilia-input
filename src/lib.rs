@@ -8,6 +8,10 @@ thread_local! {
     static TX: OnceCell<mpsc::Sender<rdev::Event>> = OnceCell::new();
 }
 
+/// Initialise the input monitoring system, returning an [`mpsc::Receiver`] which can be used to
+/// recieve input events.
+/// # Panics
+/// * If called more than once in the same program.
 pub fn init() -> mpsc::Receiver<rdev::Event> {
     let (tx, rx) = mpsc::channel(MAX_EVENTS);
     std::thread::spawn(move || {
