@@ -208,7 +208,7 @@ fn keybind_match(key: Option<Key>, mods: Option<Modifiers>, repeat: u8, mode: Op
         matched &= false;
       }
     } else {
-      matched &= true;
+      matched &= false;
     }
     if let Some(kmods) = mods {
       if kb.mods == kmods {
