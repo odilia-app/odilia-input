@@ -300,11 +300,11 @@ where
     let _res = KEY_BINDING_FUNCS.set(keymap);
     // Create the channel for communication between the input monitoring thread and async tasks
     let (tx, rx) = mpsc::channel(MAX_EVENTS);
+    let tokio_handler = Handle::current();
 
     // Spawn a synchronous input monitoring thread
     std::thread::spawn(move || {
         // should work as long as called from a tokio runtime
-        let tokio_handler = Handle::current();
         // Set the thread-local variables
         TX.with(|global| global.set(tx).unwrap());
         DECIDE_ACTION.with(|global| {
