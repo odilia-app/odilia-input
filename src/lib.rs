@@ -195,25 +195,29 @@ fn rdev_keys_to_single_odilia_key(keys: &Vec<RDevKey>) -> Option<Key> {
 fn keybind_match(key: Option<Key>, mods: Option<Modifiers>, repeat: u8, mode: Option<ScreenReaderMode>, consume: Option<bool>) -> Option<&'static AsyncFn> {
   // probably unsafe
   for (kb, afn) in KEY_BINDING_FUNCS.get().unwrap().iter() {
+    println!("KB NEEDED: {:?}", kb);
     let mut matched = true;
     if kb.repeat == repeat {
       matched &= true;
     } else {
       matched &= false;
+      println!("REPEAT !=");
     }
     if let Some(kkey) = key {
       if kb.key == kkey {
         matched &= true;
       } else {
+        println!("KEY !=");
         matched &= false;
       }
     } else {
       matched &= false;
     }
     if let Some(kmods) = mods {
-      if kb.mods == kmods {
+      if kmods != Modifiers::NONE && kb.mods.contains(kmods) {
         matched &= true;
       } else {
+        println!("MODS !=");
         matched &= false;
       }
     } else {
@@ -223,6 +227,7 @@ fn keybind_match(key: Option<Key>, mods: Option<Modifiers>, repeat: u8, mode: Op
       if kb.consume == c {
         matched &= true;
       } else {
+        println!("CONSUME !=");
         matched &= false;
       }
     } else {
@@ -233,6 +238,7 @@ fn keybind_match(key: Option<Key>, mods: Option<Modifiers>, repeat: u8, mode: Op
       if kb.mode == Some(m) {
         matched &= true;
       } else {
+        println!("MODE !=");
         matched &= false;
       }
     } else {
@@ -257,13 +263,16 @@ fn rdev_event_to_func_to_call(event: &Event, current_keys: &mut Vec<RDevKey>, la
       if !vector_eq(&last_keys, &current_keys) {
         let key = rdev_keys_to_single_odilia_key(&current_keys);
         let mods = rdev_keys_to_odilia_modifiers(&current_keys);
-        keybind_match(
+        println!("KEY: {:?}", key);
+        println!("MODS: {:?}", mods);
+        let kbdm = keybind_match(
           key,
           Some(mods),
           1 as u8, // fixed for now
           None, // match all modes
           None, // match consume and not consume
-        )
+        );
+        kbdm
       } else {
         None
       }
