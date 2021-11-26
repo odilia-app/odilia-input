@@ -1,3 +1,6 @@
+#[macro_use]
+extern crate lazy_static;
+
 use odilia_common::{
   input::{
     KeyBinding,
@@ -8,7 +11,10 @@ use odilia_common::{
     ScreenReaderMode,
   },
 };
-use tokio::sync::mpsc;
+use tokio::{
+  sync::mpsc,
+  runtime::Handle,
+};
 use rdev::{
   Event,
   EventType::{KeyPress, KeyRelease},
@@ -16,10 +22,13 @@ use rdev::{
 };
 
 use once_cell::sync::OnceCell;
-use std::collections::HashMap;
-use std::future::Future;
+use std::{
+  collections::HashMap,
+  future::Future,
+  sync::Mutex,
+};
 
-type AsyncFn = Box<dyn Fn() -> Box<dyn Future<Output=()> + Unpin + Send + 'static> + Send + 'static + Sync>;
+pub type AsyncFn = Box<dyn Fn() -> Box<dyn Future<Output=()> + Unpin + Send + 'static> + Send + Sync + 'static>;
 
 /// An action to take when an input event arrives
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -48,9 +57,12 @@ thread_local! {
     /// A function used to decide whether to consume the [`Event`][rdev::Event], and also whether
     /// to notify us of it.
     static DECIDE_ACTION: OnceCell<Box<dyn Fn(&rdev::Event) -> EventAction + Send>> = OnceCell::new();
-    static CURRENT_KEYS: Vec<RDevKey> = Vec::new();
-    static LAST_KEYS: Vec<RDevKey> = Vec::new();
-    static KEY_BINDING_FUNCS: HashMap<KeyBinding, AsyncFn> = HashMap::new();
+}
+static KEY_BINDING_FUNCS: OnceCell<HashMap<KeyBinding, AsyncFn>> = OnceCell::new();
+
+lazy_static! {
+  static ref CURRENT_KEYS: Mutex<Vec<RDevKey>> = Mutex::new(Vec::new());
+  static ref LAST_KEYS: Mutex<Vec<RDevKey>> = Mutex::new(Vec::new());
 }
 
 fn vector_eq(va: &Vec<RDevKey>, vb: &Vec<RDevKey>) -> bool {
@@ -63,17 +75,17 @@ fn vector_eq(va: &Vec<RDevKey>, vb: &Vec<RDevKey>) -> bool {
 fn rdev_keys_to_odilia_modifiers(keys: &Vec<RDevKey>) -> Modifiers {
   let mut modifiers = Modifiers::empty();
   for k in keys {
-    modifiers |= match k {
+    modifiers |= match *k {
       k if k == RDevKey::CapsLock => Modifiers::ODILIA,
       k if k == RDevKey::Alt => Modifiers::ALT_L,
       k if k == RDevKey::AltGr => Modifiers::ALT_R,
-      k if k == RDevKey::ControlLeft => Modifiers::CTRL_L,
-      k if k == RDevKey::ControlRight => Modifiers::CTRL_R,
+      k if k == RDevKey::ControlLeft => Modifiers::CONTROL_L,
+      k if k == RDevKey::ControlRight => Modifiers::CONTROL_R,
       k if k == RDevKey::ShiftLeft => Modifiers::SHIFT_L,
       k if k == RDevKey::ShiftRight => Modifiers::SHIFT_R,
       k if k == RDevKey::MetaLeft => Modifiers::META_L,
       k if k == RDevKey::MetaRight => Modifiers::META_R,
-      _ => 0 as u16,
+      _ => Modifiers::empty(),
     }
   }
   modifiers
@@ -85,113 +97,127 @@ This function will always return the first pressed key (a and a in our examples)
 fn rdev_keys_to_single_odilia_key(keys: &Vec<RDevKey>) -> Option<Key> {
   for k in keys {
     let m = match k {
-      RDevKey::Backspace => Key::Backspace,
-      RDevKey::Delete => Key::Delete,
-      RDevKey::DownArrow => Key::Down,
-      RDevKey::UpArrow => Key::Up,
-      RDevKey::LeftArrow => Key::Left,
-      RDevKey::RightArrow => Key::Right,
-      RDevKey::End => Key::End,
-      RDevKey::Escape => Key::Escape,
-      RDevKey::F1 => Key::F1,
-      RDevKey::F2 => Key::F2,
-      RDevKey::F3 => Key::F3,
-      RDevKey::F4 => Key::F4,
-      RDevKey::F5 => Key::F5,
-      RDevKey::F6 => Key::F6,
-      RDevKey::F7 => Key::F7,
-      RDevKey::F8 => Key::F8,
-      RDevKey::F9 => Key::F9,
-      RDevKey::F10 => Key::F10,
-      RDevKey::F11 => Key::F11,
-      RDevKey::F12 => Key::F12,
-      RDevKey::Home => Key::Home,
-      RDevKey::PageDown => Key::PageDown,
-      RDevKey::PageUp => Key::PageUp,
-      RDevKey::Return => Key::Return,
-      RdevKey::Space => Key::Space,
-      RDevKey::Tab => Key::Tab,
-      RDevKey::PrintScreen => Key::PrintScreen,
-      RDevKey::ScrollLock => Key::ScrollLock,
-      RDevKey::Pause => Key::Pause,
-      RDevKey::NumLock => Key::NumLock,
-      RDevKey::BackQuote => Key::Other('`'),
-      RDevKey::Num0 => Key::Kp0,
-      RDevKey::Num1 => Key::Kp1,
-      RDevKey::Num2 => Key::Kp2,
-      RDevKey::Num3 => Key::Kp3,
-      RDevKey::Num4 => Key::Kp4,
-      RDevKey::Num5 => Key::Kp5,
-      RDevKey::Num6 => Key::Kp6,
-      RDevKey::Num7 => Key::Kp7,
-      RDevKey::Num8 => Key::Kp8,
-      RDevKey::Num9 => Key::Kp9,
-      RDevKey::Minus => Key::Other('-'),
-      RDevKey::Equal => Key::Other('='),
-      RDevKey::KeyQ => Key::Other('q'),
-      RDevKey::KeyW => Key::Other('w'),
-      RDevKey::KeyE => Key::Other('e'),
-      RDevKey::KeyR => Key::Other('r'),
-      RDevKey::KeyT => Key::Other('t'),
-      RDevKey::KeyY => Key::Other('y'),
-      RDevKey::KeyU => Key::Other('u'),
-      RDevKey::KeyI => Key::Other('i'),
-      RDevKey::KeyO => Key::Other('o'),
-      RDevKey::KeyP => Key::Other('p'),
-      RDevKey::LeftBracket => Key::Other('['),
-      RDevKey::RightBracket => Key::Other(']'),
-      RDevKey::KeyA => Key::Other('a'),
-      RDevKey::KeyS => Key::Other('s'),
-      RDevKey::KeyD => Key::Other('d'),
-      RDevKey::KeyF => Key::Other('f'),
-      RDevKey::KeyG => Key::Other('g'),
-      RDevKey::KeyH => Key::Other('h'),
-      RDevKey::KeyJ => Key::Other('j'),
-      RDevKey::KeyK => Key::Other('k'),
-      RDevKey::KeyL => Key::Other('l'),
-      RDevKey::SemiColon => Key::Other(';'),
-      RDevKey::Quote => Key::Other('\''),
-      RDevKey::BackSlack => Key::Other('\\'),
-      // TODO: check if correct below
-      RDevKey::IntlBackslash => Key::Other('\\'),
-      RDevKey::KeyZ => Key::Other('z'),
-      RDevKey::KeyX => Key::Other('x'),
-      RDevKey::KeyC => Key::Other('c'),
-      RDevKey::KeyV => Key::Other('v'),
-      RDevKey::KeyB => Key::Other('b'),
-      RDevKey::KeyN => Key::Other('n'),
-      RDevKey::Comma => Key::Other(','),
-      RDevKey::Dot => Key::Other('.'),
-      RDevKey::Slash => Key::Other('/'),
-      RDevKey::Insert => Key::Insert,
-      RDevKey::KpReturn => Key::KpReturn,
-      RDevKey::KpMinus => Key::KpMinus,
-      RDevKey::KpPlus => Key::KpPlus,
-      RDevKey::KpMultiply => Key::KpMultiply,
-      RDevKey::KpDivide => Key::KpDivide,
-      RDevKey::KpDelete => Key::KpDelete,
-      RDevKey::Function => Key::Function,
+      RDevKey::Backspace => Some(Key::Backspace),
+      RDevKey::Delete => Some(Key::Delete),
+      RDevKey::DownArrow => Some(Key::Down),
+      RDevKey::UpArrow => Some(Key::Up),
+      RDevKey::LeftArrow => Some(Key::Left),
+      RDevKey::RightArrow => Some(Key::Right),
+      RDevKey::End => Some(Key::End),
+      RDevKey::Escape => Some(Key::Escape),
+      RDevKey::F1 => Some(Key::F1),
+      RDevKey::F2 => Some(Key::F2),
+      RDevKey::F3 => Some(Key::F3),
+      RDevKey::F4 => Some(Key::F4),
+      RDevKey::F5 => Some(Key::F5),
+      RDevKey::F6 => Some(Key::F6),
+      RDevKey::F7 => Some(Key::F7),
+      RDevKey::F8 => Some(Key::F8),
+      RDevKey::F9 => Some(Key::F9),
+      RDevKey::F10 => Some(Key::F10),
+      RDevKey::F11 => Some(Key::F11),
+      RDevKey::F12 => Some(Key::F12),
+      RDevKey::Home => Some(Key::Home),
+      RDevKey::PageDown => Some(Key::PageDown),
+      RDevKey::PageUp => Some(Key::PageUp),
+      RDevKey::Return => Some(Key::Return),
+      RDevKey::Space => Some(Key::Space),
+      RDevKey::Tab => Some(Key::Tab),
+      RDevKey::PrintScreen => Some(Key::PrintScreen),
+      RDevKey::ScrollLock => Some(Key::ScrollLock),
+      RDevKey::Pause => Some(Key::Pause),
+      RDevKey::NumLock => Some(Key::NumLock),
+      RDevKey::BackQuote => Some(Key::Other('`')),
+      RDevKey::Num0 => Some(Key::Kp0),
+      RDevKey::Num1 => Some(Key::Kp1),
+      RDevKey::Num2 => Some(Key::Kp2),
+      RDevKey::Num3 => Some(Key::Kp3),
+      RDevKey::Num4 => Some(Key::Kp4),
+      RDevKey::Num5 => Some(Key::Kp5),
+      RDevKey::Num6 => Some(Key::Kp6),
+      RDevKey::Num7 => Some(Key::Kp7),
+      RDevKey::Num8 => Some(Key::Kp8),
+      RDevKey::Num9 => Some(Key::Kp9),
+      RDevKey::Minus => Some(Key::Other('-')),
+      RDevKey::Equal => Some(Key::Other('=')),
+      RDevKey::KeyQ => Some(Key::Other('q')),
+      RDevKey::KeyW => Some(Key::Other('w')),
+      RDevKey::KeyE => Some(Key::Other('e')),
+      RDevKey::KeyR => Some(Key::Other('r')),
+      RDevKey::KeyT => Some(Key::Other('t')),
+      RDevKey::KeyY => Some(Key::Other('y')),
+      RDevKey::KeyU => Some(Key::Other('u')),
+      RDevKey::KeyI => Some(Key::Other('i')),
+      RDevKey::KeyO => Some(Key::Other('o')),
+      RDevKey::KeyP => Some(Key::Other('p')),
+      RDevKey::LeftBracket => Some(Key::Other('[')),
+      RDevKey::RightBracket => Some(Key::Other(']')),
+      RDevKey::KeyA => Some(Key::Other('a')),
+      RDevKey::KeyS => Some(Key::Other('s')),
+      RDevKey::KeyD => Some(Key::Other('d')),
+      RDevKey::KeyF => Some(Key::Other('f')),
+      RDevKey::KeyG => Some(Key::Other('g')),
+      RDevKey::KeyH => Some(Key::Other('h')),
+      RDevKey::KeyJ => Some(Key::Other('j')),
+      RDevKey::KeyK => Some(Key::Other('k')),
+      RDevKey::KeyL => Some(Key::Other('l')),
+      RDevKey::SemiColon => Some(Key::Other(';')),
+      RDevKey::Quote => Some(Key::Other('\'')),
+      RDevKey::BackSlash => Some(Key::Other('\\')),
+      // TODO: check if correct belo)w
+      RDevKey::IntlBackslash => Some(Key::Other('\\')),
+      RDevKey::KeyZ => Some(Key::Other('z')),
+      RDevKey::KeyX => Some(Key::Other('x')),
+      RDevKey::KeyC => Some(Key::Other('c')),
+      RDevKey::KeyV => Some(Key::Other('v')),
+      RDevKey::KeyB => Some(Key::Other('b')),
+      RDevKey::KeyN => Some(Key::Other('n')),
+      RDevKey::Comma => Some(Key::Other(',')),
+      RDevKey::Dot => Some(Key::Other('.')),
+      RDevKey::Slash => Some(Key::Other('/')),
+      RDevKey::Insert => Some(Key::Insert),
+      RDevKey::KpReturn => Some(Key::KpReturn),
+      RDevKey::KpMinus => Some(Key::KpMinus),
+      RDevKey::KpPlus => Some(Key::KpPlus),
+      RDevKey::KpMultiply => Some(Key::KpMultiply),
+      RDevKey::KpDivide => Some(Key::KpDivide),
+      RDevKey::KpDelete => Some(Key::KpDelete),
+      RDevKey::Function => Some(Key::Function),
       _ => None,
     };
     if let Some(m2) = m {
-      return m2;
+      return Some(m2);
     }
   }
   return None;
 }
 
-fn keybind_match(key: Key, mods: Modifiers, repeat: u8, mode: Option<ScreenReaderMode>, consume: Option<bool>, keybindings: &HashMap<KeyBinding, AsyncFn>) -> Option<AsyncFn> {
-  for (kb, afn) in keybindings {
+fn keybind_match(key: Option<Key>, mods: Option<Modifiers>, repeat: u8, mode: Option<ScreenReaderMode>, consume: Option<bool>) -> Option<&'static AsyncFn> {
+  // probably unsafe
+  for (kb, afn) in KEY_BINDING_FUNCS.get().unwrap().iter() {
     let mut matched = true;
-    if kb.key == key {
+    if kb.repeat == repeat {
       matched &= true;
     } else {
       matched &= false;
     }
-    if kb.mods = mods {
-      matched &= true;
+    if let Some(kkey) = key {
+      if kb.key == kkey {
+        matched &= true;
+      } else {
+        matched &= false;
+      }
     } else {
-      matched &= false;
+      matched &= true;
+    }
+    if let Some(kmods) = mods {
+      if kb.mods == kmods {
+        matched &= true;
+      } else {
+        matched &= false;
+      }
+    } else {
+      matched &= true;
     }
     if let Some(c) = consume {
       if kb.consume == c {
@@ -203,8 +229,8 @@ fn keybind_match(key: Key, mods: Modifiers, repeat: u8, mode: Option<ScreenReade
       matched &= true;
     }
 
-    if let Some(m) = mode {
-      if kb.mode == m {
+    if let Some(m) = mode.clone() {
+      if kb.mode == Some(m) {
         matched &= true;
       } else {
         matched &= false;
@@ -214,34 +240,36 @@ fn keybind_match(key: Key, mods: Modifiers, repeat: u8, mode: Option<ScreenReade
     }
 
     if matched {
-      return afn;
+      return Some(afn);
     }
   }
   None
 }
 
 /* Option so None can be returned if "KeyPress" continues to fire while one key continues to be held down */
-fn rdev_event_to_func_to_call(event: Event, current_keys: &Vec<RDevKey>, last_keys: &Vec<RDevKey>, kbfncs: &HashMap<KeyBinding, AsyncFn>) -> Option<AsyncFn> {
+fn rdev_event_to_func_to_call(event: &Event, current_keys: &mut Vec<RDevKey>, last_keys: &mut Vec<RDevKey>) -> Option<&'static AsyncFn> {
   match event.event_type {
     KeyPress(x) => {
-      last_keys = current_keys.clone();
+      *last_keys = current_keys.clone();
       current_keys.push(x);
       current_keys.dedup();
       // if there is a new key pressed/released and it is not a repeat event
-      if !vec_eq(&last_keys, &current_keys) {
+      if !vector_eq(&last_keys, &current_keys) {
         let key = rdev_keys_to_single_odilia_key(&current_keys);
         let mods = rdev_keys_to_odilia_modifiers(&current_keys);
         keybind_match(
           key,
-          mods,
+          Some(mods),
           1 as u8, // fixed for now
           None, // match all modes
           None, // match consume and not consume
         )
+      } else {
+        None
       }
     },
     KeyRelease(x) => {
-      last_keys = current_keys.clone();
+      *last_keys = current_keys.clone();
       // remove just released key from curent keys
       current_keys.retain(|&k| k != x);
       None
@@ -265,21 +293,20 @@ const MAX_EVENTS: usize = 256;
 /// also whether we are notified about it via the channel.
 /// # Panics
 /// * If called more than once in the same program.
-pub fn init<F>(decide_action: F, keymap: &HashMap<KeyBinding, AsyncFn> + Sync) -> mpsc::Receiver<rdev::Event>
+pub fn init<F>(decide_action: F, keymap: HashMap<KeyBinding, AsyncFn>) -> mpsc::Receiver<rdev::Event>
 where
     F: Fn(&rdev::Event) -> EventAction + Send + 'static,
 {
-
+    let _res = KEY_BINDING_FUNCS.set(keymap);
     // Create the channel for communication between the input monitoring thread and async tasks
     let (tx, rx) = mpsc::channel(MAX_EVENTS);
 
     // Spawn a synchronous input monitoring thread
     std::thread::spawn(move || {
+        // should work as long as called from a tokio runtime
+        let tokio_handler = Handle::current();
         // Set the thread-local variables
         TX.with(|global| global.set(tx).unwrap());
-        CURRENT_KEYS.with(|global| global = &Vec::new() );
-        LAST_KEYS.with(|global| global = &Vec::new() );
-        KEY_BINDING_FUNCS.with(|global| global = &keymap.clone() );
         DECIDE_ACTION.with(|global| {
             // We can't unwrap() here because the Err variant holds a Box<dyn Fn(...) ...>, which
             // doesn't implement Debug
@@ -287,9 +314,15 @@ where
                 panic!("init() should only be called once");
             }
         });
-
         // Start the event loop
-        rdev::grab(|ev| {
+        rdev::grab(move |ev| {
+            let mut current_keys = CURRENT_KEYS.lock().unwrap();
+            let mut last_keys = LAST_KEYS.lock().unwrap();
+            if let Some(asyncfn) = rdev_event_to_func_to_call(&ev, &mut current_keys, &mut last_keys) {
+              tokio_handler.spawn(async move {
+                asyncfn().await;
+              });
+            }
             TX.with(|tx| {
                 let tx = tx.get().unwrap();
 
