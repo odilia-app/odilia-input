@@ -214,7 +214,8 @@ fn keybind_match(key: Option<Key>, mods: Option<Modifiers>, repeat: u8, mode: Op
       matched &= false;
     }
     if let Some(kmods) = mods {
-      if kmods != Modifiers::NONE && kb.mods.contains(kmods) {
+      // if modifiers are required and match, or no modifiers are required
+      if (kmods != Modifiers::NONE && kb.mods.contains(kmods)) || kb.mods == Modifiers::NONE {
         matched &= true;
       } else {
         println!("MODS !=");
