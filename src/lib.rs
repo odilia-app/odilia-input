@@ -237,7 +237,7 @@ fn rdev_event_to_func_to_call(
 ) -> Option<&'static AsyncFn> {
     match event.event_type {
         KeyPress(x) => {
-            *last_keys = current_keys.clone();
+            last_keys.clone_from(current_keys);
             current_keys.push(x);
             current_keys.dedup();
             // if there is a new key pressed/released and it is not a repeat event
@@ -256,8 +256,8 @@ fn rdev_event_to_func_to_call(
             }
         }
         KeyRelease(x) => {
-            *last_keys = current_keys.clone();
-            // remove just released key from curent keys
+            last_keys.clone_from(current_keys);
+            // remove just released key from current keys
             current_keys.retain(|&k| k != x);
             None
         }
