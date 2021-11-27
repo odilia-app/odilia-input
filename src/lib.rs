@@ -3,6 +3,7 @@ extern crate lazy_static;
 
 use odilia_common::{
   input::{
+    KeyEvent,
     KeyBinding,
     Key,
     Modifiers,
@@ -13,7 +14,6 @@ use odilia_common::{
 };
 use tokio::{
   sync::mpsc,
-  runtime::Handle,
 };
 use rdev::{
   Event,
@@ -53,12 +53,11 @@ impl EventAction {
 // These are to be used only from the input monitoring thread
 thread_local! {
     /// The channel's [`mpsc::Sender`].
-    static TX: OnceCell<mpsc::Sender<rdev::Event>> = OnceCell::new();
+    static TX: OnceCell<mpsc::Sender<KeyEvent>> = OnceCell::new();
     /// A function used to decide whether to consume the [`Event`][rdev::Event], and also whether
     /// to notify us of it.
-    static DECIDE_ACTION: OnceCell<Box<dyn Fn(&rdev::Event) -> EventAction + Send>> = OnceCell::new();
+    static DECIDE_ACTION: OnceCell<Box<dyn Fn(&KeyEvent) -> EventAction + Send>> = OnceCell::new();
 }
-static KEY_BINDING_FUNCS: OnceCell<HashMap<KeyBinding, AsyncFn>> = OnceCell::new();
 
 lazy_static! {
   static ref CURRENT_KEYS: Mutex<Vec<RDevKey>> = Mutex::new(Vec::new());
@@ -192,63 +191,32 @@ fn rdev_keys_to_single_odilia_key(keys: &Vec<RDevKey>) -> Option<Key> {
   return None;
 }
 
-fn keybind_match(key: Option<Key>, mods: Option<Modifiers>, repeat: u8, mode: Option<ScreenReaderMode>, consume: Option<bool>) -> Option<&'static AsyncFn> {
-  // probably unsafe
-  for (kb, afn) in KEY_BINDING_FUNCS.get().unwrap().iter() {
-    let mut matched = true;
-    if kb.repeat == repeat {
-      matched &= true;
-    } else {
-      matched &= false;
+pub fn find_keybind(kev: KeyEvent, mode: ScreenReaderMode, kbdfns: &'static HashMap<KeyBinding, AsyncFn>) -> Option<&'static KeyBinding> {
+    for (kb, _) in kbdfns.iter() {
+        let mut matches = true;
+        matches &= kev.key == kb.key;
+        matches &= kev.mods == kb.mods;
+        matches &= kev.repeat == kb.repeat;
+        if let Some(m1) = &kb.mode {
+            matches &= *m1 == mode;
+        }
+        if matches {
+            return Some(kb);
+        }
     }
-    if let Some(kkey) = key {
-      if kb.key == kkey {
-        matched &= true;
-      } else {
-        matched &= false;
-      }
-    } else {
-      matched &= false;
-    }
-    if let Some(kmods) = mods {
-      // if modifiers are required and match, or no modifiers are required
-      if (kmods != Modifiers::NONE && kb.mods.contains(kmods)) || kb.mods == Modifiers::NONE {
-        matched &= true;
-      } else {
-        matched &= false;
-      }
-    } else {
-      matched &= true;
-    }
-    if let Some(c) = consume {
-      if kb.consume == c {
-        matched &= true;
-      } else {
-        matched &= false;
-      }
-    } else {
-      matched &= true;
-    }
-
-    if let Some(m) = mode.clone() {
-      if kb.mode == Some(m) {
-        matched &= true;
-      } else {
-        matched &= false;
-      }
-    } else {
-      matched &= true;
-    }
-
-    if matched {
-      return Some(afn);
-    }
-  }
-  None
+    None
 }
 
-/* Option so None can be returned if "KeyPress" continues to fire while one key continues to be held down */
-fn rdev_event_to_func_to_call(event: &Event, current_keys: &mut Vec<RDevKey>, last_keys: &mut Vec<RDevKey>) -> Option<&'static AsyncFn> {
+fn rdev_event_to_odilia_event(events: &Vec<RDevKey>) -> KeyEvent {
+    KeyEvent {
+        key: rdev_keys_to_single_odilia_key(events),
+        mods: rdev_keys_to_odilia_modifiers(events),
+        /* TODO: set repeat properly */
+        repeat: 1,
+    }
+}
+
+fn is_new_key_event(event: &Event, current_keys: &mut Vec<RDevKey>, last_keys: &mut Vec<RDevKey>) -> bool {
   match event.event_type {
     KeyPress(x) => {
       *last_keys = current_keys.clone();
@@ -256,27 +224,18 @@ fn rdev_event_to_func_to_call(event: &Event, current_keys: &mut Vec<RDevKey>, la
       current_keys.dedup();
       // if there is a new key pressed/released and it is not a repeat event
       if !vector_eq(&last_keys, &current_keys) {
-        let key = rdev_keys_to_single_odilia_key(&current_keys);
-        let mods = rdev_keys_to_odilia_modifiers(&current_keys);
-        let kbdm = keybind_match(
-          key,
-          Some(mods),
-          1 as u8, // fixed for now
-          None, // match all modes
-          None, // match consume and not consume
-        );
-        kbdm
+        true
       } else {
-        None
+        false
       }
     },
     KeyRelease(x) => {
       *last_keys = current_keys.clone();
       // remove just released key from curent keys
       current_keys.retain(|&k| k != x);
-      None
+      false
     },
-    _ => None
+    _ => false
   }
 }
 
@@ -295,14 +254,12 @@ const MAX_EVENTS: usize = 256;
 /// also whether we are notified about it via the channel.
 /// # Panics
 /// * If called more than once in the same program.
-pub fn init<F>(decide_action: F, keymap: HashMap<KeyBinding, AsyncFn>) -> mpsc::Receiver<rdev::Event>
+pub fn init<F>(decide_action: F) -> mpsc::Receiver<KeyEvent>
 where
-    F: Fn(&rdev::Event) -> EventAction + Send + 'static,
+    F: Fn(&KeyEvent) -> EventAction + Send + 'static,
 {
-    let _res = KEY_BINDING_FUNCS.set(keymap);
     // Create the channel for communication between the input monitoring thread and async tasks
     let (tx, rx) = mpsc::channel(MAX_EVENTS);
-    let tokio_handler = Handle::current();
 
     // Spawn a synchronous input monitoring thread
     std::thread::spawn(move || {
@@ -320,20 +277,20 @@ where
         rdev::grab(move |ev| {
             let mut current_keys = CURRENT_KEYS.lock().unwrap();
             let mut last_keys = LAST_KEYS.lock().unwrap();
-            if let Some(asyncfn) = rdev_event_to_func_to_call(&ev, &mut current_keys, &mut last_keys) {
-              tokio_handler.spawn(async move {
-                asyncfn().await;
-              });
+            // if the event is not new (i.e. a held key), just passthrough the event
+            if !is_new_key_event(&ev, &mut current_keys, &mut last_keys) {
+                return Some(ev);
             }
             TX.with(|tx| {
                 let tx = tx.get().unwrap();
 
                 // Decide what to do with this `Event`
-                let action = DECIDE_ACTION.with(|decide_action| decide_action.get().unwrap()(&ev));
+                let o_event = rdev_event_to_odilia_event(&current_keys);
+                let action = DECIDE_ACTION.with(|decide_action| decide_action.get().unwrap()(&o_event));
 
                 if action.notify() {
                     // Notify us by sending the `Event` down the channel
-                    if let Err(e) = tx.blocking_send(ev.clone()) {
+                    if let Err(e) = tx.blocking_send(o_event.clone()) {
                         eprintln!("Warning: Failed to process key event: {}", e);
                     }
                 }
