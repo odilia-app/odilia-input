@@ -60,13 +60,6 @@ static KEY_BINDING_FUNCS: OnceCell<HashMap<KeyBinding, AsyncFn>> = OnceCell::new
 static CURRENT_KEYS: Lazy<Mutex<Vec<RDevKey>>> = Lazy::new(|| Mutex::new(Vec::new()));
 static LAST_KEYS: Lazy<Mutex<Vec<RDevKey>>> = Lazy::new(||Mutex::new(Vec::new()));
 
-fn vector_eq(va: &Vec<RDevKey>, vb: &Vec<RDevKey>) -> bool {
-  (va.len() == vb.len()) &&
-  va.iter()
-    .zip(vb)
-    .all(|(a,b)| format!("{:?}", a) == format!("{:?}", b))
-}
-
 fn rdev_keys_to_odilia_modifiers(keys: &Vec<RDevKey>) -> Modifiers {
   let mut modifiers = Modifiers::empty();
   for k in keys {
@@ -250,7 +243,7 @@ fn rdev_event_to_func_to_call(event: &Event, current_keys: &mut Vec<RDevKey>, la
       current_keys.push(x);
       current_keys.dedup();
       // if there is a new key pressed/released and it is not a repeat event
-      if !vector_eq(&last_keys, &current_keys) {
+      if last_keys != current_keys {
         let key = rdev_keys_to_single_odilia_key(&current_keys);
         let mods = rdev_keys_to_odilia_modifiers(&current_keys);
         let kbdm = keybind_match(
