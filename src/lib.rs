@@ -56,7 +56,7 @@ thread_local! {
     static TX: OnceCell<mpsc::Sender<KeyEvent>> = OnceCell::new();
     /// A function used to decide whether to consume the [`Event`][rdev::Event], and also whether
     /// to notify us of it.
-    static DECIDE_ACTION: OnceCell<Box<dyn Fn(&KeyEvent) -> EventAction + Send>> = OnceCell::new();
+    static DECIDE_ACTION: OnceCell<Box<dyn Fn(&KeyEvent) -> (bool,bool) + Send>> = OnceCell::new();
 }
 
 lazy_static! {
@@ -256,7 +256,7 @@ const MAX_EVENTS: usize = 256;
 /// * If called more than once in the same program.
 pub fn init<F>(decide_action: F) -> mpsc::Receiver<KeyEvent>
 where
-    F: Fn(&KeyEvent) -> EventAction + Send + 'static,
+    F: Fn(&KeyEvent) -> (bool, bool) + Send + 'static,
 {
     // Create the channel for communication between the input monitoring thread and async tasks
     let (tx, rx) = mpsc::channel(MAX_EVENTS);
@@ -286,16 +286,16 @@ where
 
                 // Decide what to do with this `Event`
                 let o_event = rdev_event_to_odilia_event(&current_keys);
-                let action = DECIDE_ACTION.with(|decide_action| decide_action.get().unwrap()(&o_event));
+                let (notify,consume) = DECIDE_ACTION.with(|decide_action| decide_action.get().unwrap()(&o_event));
 
-                if action.notify() {
+                if notify {
                     // Notify us by sending the `Event` down the channel
                     if let Err(e) = tx.blocking_send(o_event.clone()) {
                         eprintln!("Warning: Failed to process key event: {}", e);
                     }
                 }
                 // Decide whether to consume the action or pass it through
-                if action == EventAction::Consume {
+                if consume {
                     None
                 } else {
                     Some(ev)
