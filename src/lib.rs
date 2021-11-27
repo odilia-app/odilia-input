@@ -1,6 +1,3 @@
-#[macro_use]
-extern crate lazy_static;
-
 use odilia_common::{
   input::{
     KeyBinding,
@@ -21,7 +18,7 @@ use rdev::{
   Key as RDevKey
 };
 
-use once_cell::sync::OnceCell;
+use once_cell::sync::{OnceCell, Lazy};
 use std::{
   collections::HashMap,
   future::Future,
@@ -60,10 +57,8 @@ thread_local! {
 }
 static KEY_BINDING_FUNCS: OnceCell<HashMap<KeyBinding, AsyncFn>> = OnceCell::new();
 
-lazy_static! {
-  static ref CURRENT_KEYS: Mutex<Vec<RDevKey>> = Mutex::new(Vec::new());
-  static ref LAST_KEYS: Mutex<Vec<RDevKey>> = Mutex::new(Vec::new());
-}
+static CURRENT_KEYS: Lazy<Mutex<Vec<RDevKey>>> = Lazy::new(|| Mutex::new(Vec::new()));
+static LAST_KEYS: Lazy<Mutex<Vec<RDevKey>>> = Lazy::new(||Mutex::new(Vec::new()));
 
 fn vector_eq(va: &Vec<RDevKey>, vb: &Vec<RDevKey>) -> bool {
   (va.len() == vb.len()) &&
