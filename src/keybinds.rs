@@ -8,7 +8,10 @@ use odilia_common::{
     ScreenReaderMode,
   },
 };
-use tokio::sync::Mutex;
+use tokio::{
+  sync::Mutex,
+  task::spawn,
+};
 use std::{
   future::Future,
   collections::HashMap,
@@ -51,8 +54,27 @@ pub async fn remove_keybind(kb: KeyBinding) -> bool {
   true
 }
 
+pub async fn keyevent_match(kbm: &KeyEvent) -> Option<KeyBinding>
+{
+  let kbhm = KB_MAP.lock().await;
+  let sr_mode = get_sr_mode().await;
+  for (kb, _) in kbhm.iter() {
+    let mut matches = true;
+    matches &= kb.key == kbm.key;
+    matches &= kb.repeat == kbm.repeat;
+    matches &= (kb.mods == Modifiers::NONE && kbm.mods == Modifiers::NONE) || kb.mods.intersects(kbm.mods);
+    if let Some(mode) = &kb.mode {
+      matches &= *mode == sr_mode;
+    }
+    if matches {
+      return Some(kb.clone());
+    }
+  }
+  None
+}
+
 /* this will match with the bitflags */
-pub fn keyevent_match(kbm: &KeyEvent) -> Option<KeyBinding>
+pub fn keyevent_match_sync(kbm: &KeyEvent) -> Option<KeyBinding>
 {
   let kbhm = KB_MAP.blocking_lock();
   let sr_mode = get_sr_mode_sync();
@@ -88,8 +110,17 @@ pub async fn set_sr_mode(srm: ScreenReaderMode) {
 
 /* this is to bridge with events.rs; now init_keyhandlers will be all handled within odilia-input */
 pub fn decide_action(ke: &KeyEvent) -> (bool, bool) {
-  if let Some(kb) = keyevent_match(ke) {
+  if let Some(kb) = keyevent_match_sync(ke) {
     return (kb.notify, kb.consume);
   }
   return (false, false);
+}
+
+/* TODO: do sync version */
+pub async fn run_keybind_func(kb: &KeyBinding) {
+  let kbhm = KB_MAP.lock().await;
+  let func = kbhm.get(kb).expect("Key binding not found!");
+  spawn(async move {
+    func().await;
+  });
 }
