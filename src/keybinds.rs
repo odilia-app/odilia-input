@@ -10,7 +10,6 @@ use odilia_common::{
 };
 use tokio::{
   sync::Mutex,
-  task::spawn,
 };
 use std::{
   future::Future,
@@ -109,18 +108,9 @@ pub async fn set_sr_mode(srm: ScreenReaderMode) {
 }
 
 /* this is to bridge with events.rs; now init_keyhandlers will be all handled within odilia-input */
-pub fn decide_action(ke: &KeyEvent) -> (bool, bool) {
-  if let Some(kb) = keyevent_match_sync(ke) {
-    return (kb.notify, kb.consume);
-  }
-  return (false, false);
-}
-
 /* TODO: do sync version */
 pub async fn run_keybind_func(kb: &KeyBinding) {
   let kbhm = KB_MAP.lock().await;
   let func = kbhm.get(kb).expect("Key binding not found!");
-  spawn(async move {
-    func().await;
-  });
+  func().await;
 }

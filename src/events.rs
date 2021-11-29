@@ -1,4 +1,6 @@
-use crate::keybinds::decide_action;
+use crate::keybinds::{
+  keyevent_match_sync,
+};
 
 use odilia_common::{
   input::{
@@ -6,9 +8,6 @@ use odilia_common::{
     KeyBinding,
     Key,
     Modifiers,
-  },
-  modes::{
-    ScreenReaderMode,
   },
 };
 use rdev::{
@@ -19,7 +18,7 @@ use rdev::{
 use tokio::{sync::mpsc};
 
 use once_cell::sync::{Lazy, OnceCell};
-use std::{collections::HashMap, future::Future, sync::Mutex};
+use std::{future::Future, sync::Mutex};
 
 pub type AsyncFn =
     Box<dyn Fn() -> Box<dyn Future<Output = ()> + Unpin + Send + 'static> + Send + Sync + 'static>;
@@ -27,10 +26,7 @@ pub type AsyncFn =
 // These are to be used only from the input monitoring thread
 thread_local! {
     /// The channel's [`mpsc::Sender`].
-    static TX: OnceCell<mpsc::Sender<KeyEvent>> = OnceCell::new();
-    /// A function used to decide whether to consume the [`Event`][rdev::Event], and also whether
-    /// to notify us of it.
-    static DECIDE_ACTION: OnceCell<Box<dyn Fn(&KeyEvent) -> (bool,bool) + Send>> = OnceCell::new();
+    static TX: OnceCell<mpsc::Sender<KeyBinding>> = OnceCell::new();
 }
 
 static CURRENT_KEYS: Lazy<Mutex<Vec<RDevKey>>> = Lazy::new(|| Mutex::new(Vec::new()));
@@ -156,22 +152,6 @@ fn rdev_keys_to_single_odilia_key(keys: &[RDevKey]) -> Option<Key> {
     None
 }
 
-pub fn find_keybind(kev: KeyEvent, mode: ScreenReaderMode, kbdfns: &'static HashMap<KeyBinding, AsyncFn>) -> Option<&'static KeyBinding> {
-    for (kb, _) in kbdfns.iter() {
-        let mut matches = true;
-        matches &= kev.key == kb.key;
-        matches &= kev.mods == kb.mods;
-        matches &= kev.repeat == kb.repeat;
-        if let Some(m1) = &kb.mode {
-            matches &= *m1 == mode;
-        }
-        if matches {
-            return Some(kb);
-        }
-    }
-    None
-}
-
 fn rdev_event_to_odilia_event(events: &Vec<RDevKey>) -> KeyEvent {
     KeyEvent {
         key: rdev_keys_to_single_odilia_key(events),
@@ -218,7 +198,7 @@ const MAX_EVENTS: usize = 256;
 /// also whether we are notified about it via the channel.
 /// # Panics
 /// * If called more than once in the same program.
-pub fn init() -> mpsc::Receiver<KeyEvent>
+pub fn create_keybind_channel() -> mpsc::Receiver<KeyBinding>
 where
 {
     // Create the channel for communication between the input monitoring thread and async tasks
@@ -242,16 +222,21 @@ where
 
                 // Decide what to do with this `Event`
                 let o_event = rdev_event_to_odilia_event(&current_keys);
-                let (notify,consume) = decide_action(&o_event);
+                let keybind: Option<KeyBinding> = keyevent_match_sync(&o_event);
+                /* if a matching keybinding is not found, pass through the event */
+                if keybind.is_none() {
+                  return Some(ev);
+                }
+                let keybind = keybind.unwrap(); // should never panic due to above if
 
-                if notify {
+                if keybind.notify {
                     // Notify us by sending the `Event` down the channel
-                    if let Err(e) = tx.blocking_send(o_event.clone()) {
+                    if let Err(e) = tx.blocking_send(keybind.clone()) {
                         eprintln!("Warning: Failed to process key event: {}", e);
                     }
                 }
                 // Decide whether to consume the action or pass it through
-                if consume {
+                if keybind.consume {
                     None
                 } else {
                     Some(ev)
