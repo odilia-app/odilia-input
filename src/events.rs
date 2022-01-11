@@ -11,6 +11,7 @@ use odilia_common::{
   },
 };
 use rdev::{
+    simulate,
     Event,
     EventType::{KeyPress, KeyRelease},
     Key as RDevKey,
@@ -169,6 +170,7 @@ fn is_new_key_event(event: &Event, current_keys: &mut Vec<RDevKey>, last_keys: &
       current_keys.dedup();
       // if there is a new key pressed/released and it is not a repeat event
       if last_keys != current_keys {
+        println!("KEYS: {:?}", current_keys);
         true
       } else {
         false
@@ -213,21 +215,23 @@ where
         rdev::grab(move |ev| {
             let mut current_keys = CURRENT_KEYS.lock().unwrap();
             let mut last_keys = LAST_KEYS.lock().unwrap();
+            
             // if the event is not new (i.e. a held key), just passthrough the event
             if !is_new_key_event(&ev, &mut current_keys, &mut last_keys) {
                 return Some(ev);
             }
+
+            // Decide what to do with this `Event`
+            let o_event = rdev_event_to_odilia_event(&current_keys);
+            let keybind: Option<KeyBinding> = keyevent_match_sync(&o_event);
+            /* if a matching keybinding is not found, pass through the event */
+            if keybind.is_none() {
+              return Some(ev);
+            }
+            let keybind = keybind.unwrap(); // should never panic due to above if
+
             TX.with(|tx| {
                 let tx = tx.get().unwrap();
-
-                // Decide what to do with this `Event`
-                let o_event = rdev_event_to_odilia_event(&current_keys);
-                let keybind: Option<KeyBinding> = keyevent_match_sync(&o_event);
-                /* if a matching keybinding is not found, pass through the event */
-                if keybind.is_none() {
-                  return Some(ev);
-                }
-                let keybind = keybind.unwrap(); // should never panic due to above if
 
                 if keybind.notify {
                     // Notify us by sending the `Event` down the channel
