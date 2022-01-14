@@ -10,4 +10,4 @@ tokio = { version ="1.4.0", features = ["sync", "parking_lot", "rt"]}
 rdev = { version = "0.5.1", features = ["unstable_grab"] }
 once_cell = "1.8.0"
 lazy_static = { version = "1.4.0" }
-odilia-common = { git = "https://github.com/yggdrasil-sr/odilia-common" }
+odilia-common = { git = "https://github.com/odilia-app/odilia-common" }
